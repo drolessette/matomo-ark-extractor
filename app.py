@@ -757,15 +757,30 @@ class MatomoARKExtractor(ctk.CTk):
                             curl_cmd = r'C:\Windows\System32\curl.exe'
                         
                         if curl_cmd:
+                            # Masquer la fenêtre sur Windows
+                            startupinfo = None
+                            creationflags = 0
+                            if IS_WINDOWS:
+                                startupinfo = subprocess.STARTUPINFO()
+                                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                                startupinfo.wShowWindow = subprocess.SW_HIDE
+                                creationflags = subprocess.CREATE_NO_WINDOW
+                            
                             result = subprocess.run(
                                 [curl_cmd, '-s', '--max-time', '30', '-k', '--http1.0', oai_url],
                                 capture_output=True,
-                                text=True,
-                                timeout=35
+                                timeout=35,
+                                startupinfo=startupinfo,
+                                creationflags=creationflags
                             )
-                            if result.returncode == 0 and result.stdout and '<' in result.stdout:
-                                last_response_text = result.stdout
-                                curl_success = True
+                            # Décoder en UTF-8 explicitement
+                            if result.returncode == 0 and result.stdout:
+                                try:
+                                    last_response_text = result.stdout.decode('utf-8')
+                                except:
+                                    last_response_text = result.stdout.decode('latin-1')
+                                if '<' in last_response_text:
+                                    curl_success = True
                     except Exception:
                         pass
                     
