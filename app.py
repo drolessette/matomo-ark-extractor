@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Matomo ARK Extractor v2.0
+Matomo ARK Extractor v2.1
 Extraction des statistiques ARK depuis les exports Matomo XML
 avec récupération des métadonnées via l'API OAI-PMH du catalogue Portfolio
 
@@ -17,6 +17,8 @@ from collections import defaultdict
 from pathlib import Path
 import webbrowser
 import urllib.parse
+import platform
+import subprocess
 
 # Interface moderne
 import customtkinter as ctk
@@ -28,17 +30,21 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
-# Requêtes HTTP - utiliser requests pour meilleure compatibilité réseau entreprise
-import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+# Détection du système pour choisir la méthode HTTP
+IS_WINDOWS = platform.system() == 'Windows'
+IS_MACOS = platform.system() == 'Darwin'
 
-# Désactiver les warnings SSL (nécessaire pour les réseaux d'entreprise avec proxy/certificat interne)
+# Sur Windows, utiliser requests ; sur macOS/Linux, utiliser curl
+if IS_WINDOWS:
+    import requests
+    from requests.adapters import HTTPAdapter
+    from urllib3.util.retry import Retry
+    import urllib3
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# Désactiver les warnings
 import warnings
-warnings.filterwarnings('ignore', message='Unverified HTTPS request')
-warnings.filterwarnings('ignore', category=DeprecationWarning)
-import urllib3
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+warnings.filterwarnings('ignore')
 
 # Configuration CustomTkinter
 ctk.set_appearance_mode("dark")
@@ -68,9 +74,9 @@ class MatomoARKExtractor(ctk.CTk):
         super().__init__()
         
         # Configuration fenêtre
-        self.title("📚 Matomo ARK Extractor v2.0 - Bibliothèques spécialisées Paris")
-        self.geometry("1100x800")
-        self.minsize(900, 650)
+        self.title("📚 Matomo ARK Extractor v2.1 - Bibliothèques spécialisées Paris")
+        self.geometry("1100x900")
+        self.minsize(950, 750)
         
         # Variables
         self.xml_path = ctk.StringVar()
@@ -138,7 +144,7 @@ class MatomoARKExtractor(ctk.CTk):
         
         for text, color in [("Bibliothèques spécialisées", COLORS['primary']), 
                             ("Ville de Paris", COLORS['accent']),
-                            ("v2.0 - OAI-PMH", COLORS['success'])]:
+                            ("v2.1 - OAI-PMH", COLORS['success'])]:
             badge = ctk.CTkLabel(
                 badges_frame,
                 text=text,
@@ -333,7 +339,8 @@ class MatomoARKExtractor(ctk.CTk):
             font=ctk.CTkFont(family="Consolas", size=12),
             corner_radius=10,
             fg_color="#0d1117",
-            text_color="#c9d1d9"
+            text_color="#c9d1d9",
+            height=250
         )
         self.log_textbox.pack(fill="both", expand=True, pady=(10, 0))
         self.log("🚀 Prêt ! Sélectionnez un fichier XML Matomo pour commencer.")
@@ -354,7 +361,7 @@ class MatomoARKExtractor(ctk.CTk):
         
         ctk.CTkLabel(
             footer_frame,
-            text="v2.0 - OAI-PMH",
+            text="v2.1 - OAI-PMH",
             font=ctk.CTkFont(size=11),
             text_color=COLORS['accent']
         ).pack(side="right")
@@ -446,8 +453,16 @@ class MatomoARKExtractor(ctk.CTk):
                 f"Le fichier Excel a été créé:\n\n{output_path}"
             )
             
-            # Ouvrir le dossier
-            os.startfile(os.path.dirname(output_path))
+            # Ouvrir le dossier (compatible Windows et macOS)
+            import subprocess
+            import platform
+            folder = os.path.dirname(output_path)
+            if platform.system() == 'Darwin':  # macOS
+                subprocess.call(['open', folder])
+            elif platform.system() == 'Windows':
+                os.startfile(folder)
+            else:  # Linux
+                subprocess.call(['xdg-open', folder])
             
         except Exception as e:
             self.log(f"Erreur: {str(e)}", "ERROR")
@@ -513,8 +528,8 @@ class MatomoARKExtractor(ctk.CTk):
                         ark_id_raw = ark_match.group(2)
                         component_id = ark_match.group(3)  # Peut être None
                         
-                        # Nettoyer l'ark_id des suffixes comme .locale=fr
-                        ark_id = re.sub(r'\.locale=.*$', '', ark_id_raw)
+                        # Nettoyer l'ark_id des suffixes comme .locale=fr ou .locale
+                        ark_id = re.sub(r'\.locale(=.*)?$', '', ark_id_raw)
                         
                         ark_full = f"ark:/{naan}/{ark_id}"
                         
@@ -596,13 +611,15 @@ class MatomoARKExtractor(ctk.CTk):
                 # CAS 2: Label qui est un identifiant de notice (niveau 3)
                 elif label and not label.startswith('/') and label not in ['ark:', '73873', 'Autres']:
                     if re.match(r'^(pf|FRCGM)', label):
-                        ark_full = f"ark:/73873/{label}"
+                        # Nettoyer le label des suffixes comme .locale=fr ou .locale
+                        clean_label = re.sub(r'\.locale(=.*)?$', '', label)
+                        ark_full = f"ark:/73873/{clean_label}"
                         notices.append({
                             'ark': ark_full,
-                            'ark_id': label,
+                            'ark_id': clean_label,
                             'naan': '73873',
-                            'url': f"https://bibliotheques-specialisees.paris.fr/ark:/73873/{label}",
-                            'type': get_type_from_ark(label),
+                            'url': f"https://bibliotheques-specialisees.paris.fr/ark:/73873/{clean_label}",
+                            'type': get_type_from_ark(clean_label),
                             'titre': '', 'auteur': '', 'contributeur': '',
                             'date': '', 'editeur': '', 'description': '',
                             'bibliotheque': '', 'cote': '', 'type_oai': '',
@@ -637,6 +654,7 @@ class MatomoARKExtractor(ctk.CTk):
         # Agréger par ARK unique (notices)
         aggregated = defaultdict(lambda: {
             'visits': 0, 'hits': 0, 'sum_time': 0,
+            'uniq_visitors': 0,  # On prend le max car on ne peut pas additionner les visiteurs uniques
             'entry_visits': 0, 'entry_bounces': 0, 'exit_visits': 0,
             'data': None
         })
@@ -646,6 +664,13 @@ class MatomoARKExtractor(ctk.CTk):
             aggregated[ark]['visits'] += item['nb_visits']
             aggregated[ark]['hits'] += item['nb_hits']
             aggregated[ark]['sum_time'] += item['sum_time_spent']
+            # Visiteurs uniques: prendre le max (on ne peut pas les additionner)
+            try:
+                current_uniq = int(item.get('nb_uniq_visitors') or 0)
+                if current_uniq > aggregated[ark]['uniq_visitors']:
+                    aggregated[ark]['uniq_visitors'] = current_uniq
+            except:
+                pass
             try:
                 aggregated[ark]['entry_visits'] += int(item.get('entry_nb_visits') or 0)
                 aggregated[ark]['entry_bounces'] += int(item.get('entry_bounce_count') or 0)
@@ -662,6 +687,7 @@ class MatomoARKExtractor(ctk.CTk):
             data['nb_visits'] = agg['visits']
             data['nb_hits'] = agg['hits']
             data['sum_time_spent'] = agg['sum_time']
+            data['nb_uniq_visitors'] = agg['uniq_visitors'] if agg['uniq_visitors'] > 0 else ''
             data['entry_nb_visits'] = agg['entry_visits']
             data['entry_bounce_count'] = agg['entry_bounces']
             data['exit_nb_visits'] = agg['exit_visits']
@@ -692,22 +718,13 @@ class MatomoARKExtractor(ctk.CTk):
         error_count = 0
         no_record_count = 0
         
-        # Créer une session requests avec retry automatique
-        session = requests.Session()
-        retry_strategy = Retry(
-            total=3,
-            backoff_factor=1,
-            status_forcelist=[429, 500, 502, 503, 504],
-        )
-        adapter = HTTPAdapter(max_retries=retry_strategy)
-        session.mount("https://", adapter)
-        session.mount("http://", adapter)
-        session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'application/xml, text/xml, */*',
-        })
+        import time
         
         for i, item in enumerate(self.ark_data):
+            # Délai entre les requêtes
+            if i > 0:
+                time.sleep(0.3)
+            
             # Mise à jour progression
             progress = 0.2 + (i / max(total, 1)) * 0.6
             self.progress_value.set(progress)
@@ -729,27 +746,44 @@ class MatomoARKExtractor(ctk.CTk):
                     self.log(f"  Test {meta_prefix} pour {item['ark_id']}", "PROGRESS")
                 
                 try:
-                    response = session.get(oai_url, timeout=30, verify=False)
-                    last_response_text = response.text
+                    # Méthode hybride selon le système
+                    if IS_WINDOWS:
+                        # Windows: utiliser requests avec SSL désactivé
+                        session = requests.Session()
+                        retry_strategy = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
+                        adapter = HTTPAdapter(max_retries=retry_strategy)
+                        session.mount("https://", adapter)
+                        session.headers.update({
+                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                            'Accept': 'application/xml, text/xml, */*',
+                        })
+                        response = session.get(oai_url, timeout=30, verify=False)
+                        last_response_text = response.text
+                        session.close()
+                    else:
+                        # macOS/Linux: utiliser curl (plus fiable)
+                        result = subprocess.run(
+                            ['curl', '-s', '--max-time', '30', oai_url],
+                            capture_output=True,
+                            text=True
+                        )
+                        last_response_text = result.stdout
                     
                     if i < 3:
-                        self.log(f"    → HTTP {response.status_code}, {len(response.text)} chars", "PROGRESS")
-                    
-                    if response.status_code != 200:
-                        continue
+                        self.log(f"    → {len(last_response_text)} chars", "PROGRESS")
                     
                     # Vérifier les erreurs OAI
-                    if 'idDoesNotExist' in response.text or 'noRecordsMatch' in response.text:
+                    if 'idDoesNotExist' in last_response_text or 'noRecordsMatch' in last_response_text:
                         continue
                     
-                    if '<error' in response.text and 'cannotDisseminateFormat' in response.text:
+                    if '<error' in last_response_text and 'cannotDisseminateFormat' in last_response_text:
                         continue
                     
-                    if '<error' in response.text:
+                    if '<error' in last_response_text:
                         continue
                     
                     # Parser la réponse
-                    metadata = self.parse_oai_response(response.text)
+                    metadata = self.parse_oai_response(last_response_text)
                     
                     if metadata and metadata.get('title'):
                         working_format = meta_prefix
@@ -794,9 +828,6 @@ class MatomoARKExtractor(ctk.CTk):
                 else:
                     error_count += 1
         
-        # Fermer la session
-        session.close()
-        
         self.log(f"", "INFO")
         self.log(f"=== Bilan OAI-PMH ===", "INFO")
         self.log(f"Titres récupérés: {success_count} / {total}", "SUCCESS" if success_count > 0 else "WARNING")
@@ -804,6 +835,21 @@ class MatomoARKExtractor(ctk.CTk):
             self.log(f"Non trouvés dans OAI: {no_record_count}", "WARNING")
         if error_count > 0:
             self.log(f"Erreurs/Sans métadonnées: {error_count}", "WARNING")
+        
+        # Enrichir les composantes avec le titre de leur notice parente
+        if self.components_data:
+            # Créer un dictionnaire ark (complet) → titre
+            titles_map = {item['ark']: item.get('titre', '') for item in self.ark_data if item.get('titre')}
+            
+            comp_enriched = 0
+            for comp in self.components_data:
+                ark_notice = comp.get('ark_notice', '')
+                if ark_notice and ark_notice in titles_map:
+                    comp['titre_notice'] = titles_map[ark_notice]
+                    comp_enriched += 1
+            
+            if comp_enriched > 0:
+                self.log(f"Composantes enrichies avec titre notice parente: {comp_enriched}", "SUCCESS")
     
     def parse_oai_response(self, xml_text):
         """Parse la réponse XML OAI-PMH pour extraire les métadonnées (Dublin Core + inmedia)"""
@@ -924,6 +970,19 @@ class MatomoARKExtractor(ctk.CTk):
         # Données
         for idx, item in enumerate(self.ark_data, 1):
             row = idx + 1
+            
+            # Fonction pour convertir en nombre
+            def to_num(val, default=0):
+                if val == '' or val is None:
+                    return default
+                try:
+                    return int(val)
+                except (ValueError, TypeError):
+                    try:
+                        return float(val)
+                    except (ValueError, TypeError):
+                        return default
+            
             values = [
                 idx,
                 item['ark'],
@@ -943,16 +1002,16 @@ class MatomoARKExtractor(ctk.CTk):
                 item.get('langue', ''),
                 item.get('droits', ''),
                 item.get('description', ''),
-                # Statistiques Matomo
-                item['nb_visits'],
-                item.get('nb_uniq_visitors', ''),
-                item['nb_hits'],
-                item['sum_time_spent'],
-                item.get('avg_time_on_page', ''),
-                item.get('bounce_rate', ''),
-                item.get('exit_rate', ''),
-                item.get('entry_nb_visits', ''),
-                item.get('exit_nb_visits', ''),
+                # Statistiques Matomo (convertis en nombres)
+                to_num(item['nb_visits']),
+                to_num(item.get('nb_uniq_visitors', '')),
+                to_num(item['nb_hits']),
+                to_num(item['sum_time_spent']),
+                item.get('avg_time_on_page', ''),  # Format texte "00:01:23"
+                item.get('bounce_rate', ''),  # Format texte "45 %"
+                item.get('exit_rate', ''),  # Format texte "30 %"
+                to_num(item.get('entry_nb_visits', '')),
+                to_num(item.get('exit_nb_visits', '')),
                 item['url']
             ]
             
@@ -1112,7 +1171,7 @@ class MatomoARKExtractor(ctk.CTk):
             ws4['A2'] = f"Total: {len(self.components_data)} composantes"
             ws4['A2'].font = Font(italic=True, color='666666')
             
-            headers4 = ['ARK Notice', 'ID Composante', 'Type', 'Visites', 'Visiteurs', 'Pages vues', 'Temps (s)', 'Taux rebond', 'URL']
+            headers4 = ['ARK Notice', 'Titre Notice', 'ID Composante', 'Type', 'Visites', 'Visiteurs', 'Pages vues', 'Temps (s)', 'Taux rebond', 'URL']
             for col, h in enumerate(headers4, 1):
                 cell = ws4.cell(row=4, column=col, value=h)
                 cell.font = Font(bold=True, color='FFFFFF')
@@ -1129,40 +1188,53 @@ class MatomoARKExtractor(ctk.CTk):
                     comp_type = 'Archive (BAP)'
                 elif comp_id.startswith('BHP'):
                     comp_type = 'Archive (BHP)'
+                elif comp_id.startswith('BMD'):
+                    comp_type = 'Archive (BMD)'
                 elif comp_id.isdigit() or (len(comp_id) == 4 and comp_id.isdigit()):
                     comp_type = 'Page numérisée'
                 else:
                     comp_type = 'Autre'
                 
+                # Conversion en nombre
+                def to_num(val, default=0):
+                    if val == '' or val is None:
+                        return default
+                    try:
+                        return int(val)
+                    except (ValueError, TypeError):
+                        return default
+                
                 ws4.cell(row=row, column=1, value=comp.get('ark_notice', ''))
-                ws4.cell(row=row, column=2, value=comp_id)
-                ws4.cell(row=row, column=3, value=comp_type)
-                ws4.cell(row=row, column=4, value=comp.get('nb_visits', 0))
-                ws4.cell(row=row, column=5, value=comp.get('nb_uniq_visitors', ''))
-                ws4.cell(row=row, column=6, value=comp.get('nb_hits', 0))
-                ws4.cell(row=row, column=7, value=comp.get('sum_time_spent', 0))
-                ws4.cell(row=row, column=8, value=comp.get('bounce_rate', ''))
-                url_cell = ws4.cell(row=row, column=9, value=comp.get('url', ''))
+                ws4.cell(row=row, column=2, value=comp.get('titre_notice', ''))
+                ws4.cell(row=row, column=3, value=comp_id)
+                ws4.cell(row=row, column=4, value=comp_type)
+                ws4.cell(row=row, column=5, value=to_num(comp.get('nb_visits', 0)))
+                ws4.cell(row=row, column=6, value=to_num(comp.get('nb_uniq_visitors', '')))
+                ws4.cell(row=row, column=7, value=to_num(comp.get('nb_hits', 0)))
+                ws4.cell(row=row, column=8, value=to_num(comp.get('sum_time_spent', 0)))
+                ws4.cell(row=row, column=9, value=comp.get('bounce_rate', ''))  # Texte "45 %"
+                url_cell = ws4.cell(row=row, column=10, value=comp.get('url', ''))
                 if comp.get('url'):
                     url_cell.hyperlink = comp.get('url')
                     url_cell.font = Font(color='0563C1', underline='single')
                 
                 # Alternance couleurs
                 if idx % 2 == 0:
-                    for c in range(1, 10):
+                    for c in range(1, 11):
                         ws4.cell(row=row, column=c).fill = PatternFill('solid', fgColor='deebf7')
             
             ws4.column_dimensions['A'].width = 35
-            ws4.column_dimensions['B'].width = 18
+            ws4.column_dimensions['B'].width = 50  # Titre notice
             ws4.column_dimensions['C'].width = 18
-            ws4.column_dimensions['D'].width = 10
-            ws4.column_dimensions['E'].width = 12
+            ws4.column_dimensions['D'].width = 18
+            ws4.column_dimensions['E'].width = 10
             ws4.column_dimensions['F'].width = 12
             ws4.column_dimensions['G'].width = 12
             ws4.column_dimensions['H'].width = 12
-            ws4.column_dimensions['I'].width = 75
+            ws4.column_dimensions['I'].width = 12
+            ws4.column_dimensions['J'].width = 75
             
-            ws4.auto_filter.ref = f"A4:I{len(self.components_data)+4}"
+            ws4.auto_filter.ref = f"A4:J{len(self.components_data)+4}"
             ws4.freeze_panes = 'A5'
         
         # Sauvegarder
@@ -1203,8 +1275,10 @@ class MatomoARKExtractor(ctk.CTk):
                 width=150 if col > 1 else 50
             ).grid(row=0, column=col, padx=5, pady=8)
         
-        # Data rows (max 50)
-        for row_idx, item in enumerate(self.ark_data[:50], 1):
+        # Data rows (max 200)
+        max_display = 200
+        displayed = min(len(self.ark_data), max_display)
+        for row_idx, item in enumerate(self.ark_data[:max_display], 1):
             data_row = [
                 row_idx,
                 item['ark_id'][:25],
@@ -1219,6 +1293,15 @@ class MatomoARKExtractor(ctk.CTk):
                     text=str(value),
                     width=150 if col_idx > 1 else 50
                 ).grid(row=row_idx, column=col_idx, padx=5, pady=2)
+        
+        # Footer avec compteur
+        if len(self.ark_data) > max_display:
+            ctk.CTkLabel(
+                preview_window,
+                text=f"Affichage limité à {max_display} sur {len(self.ark_data)} notices",
+                font=ctk.CTkFont(size=11, slant="italic"),
+                text_color="gray"
+            ).pack(pady=5)
 
 
 def main():
