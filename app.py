@@ -503,12 +503,15 @@ class MatomoARKExtractor(ctk.CTk):
                 
                 # CAS 1: URL explicite avec ARK
                 if url and '/ark:/' in url:
-                    # Extraire l'ARK de l'URL
-                    ark_match = re.search(r'ark:/(\d+)/([a-zA-Z0-9\-]+)(?:/([a-zA-Z0-9\-\.]+))?', url)
+                    # Extraire l'ARK de l'URL - regex améliorée pour capturer tous les formats
+                    ark_match = re.search(r'ark:/(\d+)/([a-zA-Z0-9\-_\.]+)(?:/([a-zA-Z0-9\-_\.]+))?', url)
                     if ark_match:
                         naan = ark_match.group(1)
-                        ark_id = ark_match.group(2)
+                        ark_id_raw = ark_match.group(2)
                         component_id = ark_match.group(3)  # Peut être None
+                        
+                        # Nettoyer l'ark_id des suffixes comme .locale=fr
+                        ark_id = re.sub(r'\.locale=.*$', '', ark_id_raw)
                         
                         ark_full = f"ark:/{naan}/{ark_id}"
                         
@@ -529,6 +532,21 @@ class MatomoARKExtractor(ctk.CTk):
                                 'component_id': component_id,
                                 'url': url,
                                 **data
+                            })
+                            # AUSSI ajouter la notice parente (sera agrégée/dédoublonnée plus tard)
+                            clean_url = f"https://bibliotheques-specialisees.paris.fr/{ark_full}"
+                            notices.append({
+                                'ark': ark_full,
+                                'ark_id': ark_id,
+                                'naan': naan,
+                                'url': clean_url,
+                                'type': get_type_from_ark(ark_id),
+                                'titre': '', 'auteur': '', 'contributeur': '',
+                                'date': '', 'editeur': '', 'description': '',
+                                'bibliotheque': '', 'cote': '', 'type_oai': '',
+                                'sujet': '', 'format_doc': '', 'langue': '',
+                                'droits': '', 'relation': '',
+                                **data  # Les stats de la composante contribuent à la notice parente
                             })
                         else:
                             # C'est une notice - ON NE FILTRE PLUS les vues v0001/selectedTab
