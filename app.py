@@ -51,6 +51,7 @@ COLORS = {
 
 # Configuration OAI-PMH
 OAI_BASE_URL = "https://bibliotheques-specialisees.paris.fr/in/rest/oai"
+OAI_IDENTIFIER_PREFIX = "oai:bibliotheques-specialisees.paris.fr:"
 
 
 class MatomoARKExtractor(ctk.CTk):
@@ -478,11 +479,12 @@ class MatomoARKExtractor(ctk.CTk):
                 label = row.findtext('label', '')
                 url_elem = row.find('url')
                 url = url_elem.text if url_elem is not None else None
+                segment = row.findtext('segment', '')
                 
                 # Données Matomo
                 data = {
                     'nb_visits': int(row.findtext('nb_visits', '0') or 0),
-                    'nb_uniq_visitors': row.findtext('nb_uniq_visitors', ''),
+                    'nb_uniq_visitors': row.findtext('nb_uniq_visitors', '') or row.findtext('sum_daily_nb_uniq_visitors', ''),
                     'nb_hits': int(row.findtext('nb_hits', '0') or 0),
                     'sum_time_spent': int(row.findtext('sum_time_spent', '0') or 0),
                     'avg_time_on_page': row.findtext('avg_time_on_page', ''),
@@ -493,10 +495,10 @@ class MatomoARKExtractor(ctk.CTk):
                     'exit_nb_visits': row.findtext('exit_nb_visits', ''),
                 }
                 
-                # Détection du type de ligne
+                # CAS 1: URL explicite avec ARK
                 if url and '/ark:/' in url:
                     # Extraire l'ARK de l'URL
-                    ark_match = re.search(r'ark:/(\d+)/([a-zA-Z0-9\-]+)(?:/([a-zA-Z0-9\-]+))?', url)
+                    ark_match = re.search(r'ark:/(\d+)/([a-zA-Z0-9\-]+)(?:/([a-zA-Z0-9\-\.]+))?', url)
                     if ark_match:
                         naan = ark_match.group(1)
                         ark_id = ark_match.group(2)
@@ -504,11 +506,16 @@ class MatomoARKExtractor(ctk.CTk):
                         
                         ark_full = f"ark:/{naan}/{ark_id}"
                         
-                        if component_id and (component_id.startswith('BAP') or 
-                                            component_id.startswith('BHP') or
-                                            component_id.isdigit() or
-                                            re.match(r'^\d{4}$', component_id)):
-                            # C'est une composante
+                        # Est-ce une composante ?
+                        is_component = False
+                        if component_id:
+                            if (component_id.startswith('BAP') or 
+                                component_id.startswith('BHP') or
+                                component_id.startswith('BHD') or
+                                re.match(r'^\d{4}$', component_id)):
+                                is_component = True
+                        
+                        if is_component:
                             components.append({
                                 'ark_notice': ark_full,
                                 'component_id': component_id,
@@ -516,30 +523,29 @@ class MatomoARKExtractor(ctk.CTk):
                                 **data
                             })
                         else:
-                            # C'est une notice
-                            # Nettoyer l'URL des paramètres de vue
-                            clean_url = re.sub(r'/v\d+\..*$', '', url)
-                            clean_url = re.sub(r'\?.*$', '', clean_url)
-                            
-                            notices.append({
-                                'ark': ark_full,
-                                'ark_id': ark_id,
-                                'naan': naan,
-                                'url': clean_url,
-                                'type': get_type_from_ark(ark_id),
-                                # Métadonnées (à remplir via OAI)
-                                'titre': '',
-                                'auteur': '',
-                                'date': '',
-                                'editeur': '',
-                                'description': '',
-                                'bibliotheque': '',
-                                'cote': '',
-                                **data
-                            })
+                            # C'est une notice ou une vue
+                            # Ignorer les vues (v0001.simple.selectedTab=record...)
+                            if not (component_id and ('selectedTab' in component_id or 'highlight' in component_id or component_id.startswith('v0'))):
+                                # Nettoyer l'URL des paramètres de vue
+                                clean_url = re.sub(r'/v\d+\..*$', '', url)
+                                clean_url = re.sub(r'\?.*$', '', clean_url)
+                                
+                                notices.append({
+                                    'ark': ark_full,
+                                    'ark_id': ark_id,
+                                    'naan': naan,
+                                    'url': clean_url,
+                                    'type': get_type_from_ark(ark_id),
+                                    'titre': '', 'auteur': '', 'contributeur': '',
+                                    'date': '', 'editeur': '', 'description': '',
+                                    'bibliotheque': '', 'cote': '', 'type_oai': '',
+                                    'sujet': '', 'format_doc': '', 'langue': '',
+                                    'droits': '', 'relation': '',
+                                    **data
+                                })
                 
-                elif label and not label.startswith('/') and not label.isdigit() and label != 'ark:':
-                    # Peut être un identifiant de notice au niveau 3
+                # CAS 2: Label qui est un identifiant de notice (niveau 3)
+                elif label and not label.startswith('/') and label not in ['ark:', '73873', 'Autres']:
                     if re.match(r'^(pf|FRCGM)', label):
                         ark_full = f"ark:/73873/{label}"
                         notices.append({
@@ -548,13 +554,32 @@ class MatomoARKExtractor(ctk.CTk):
                             'naan': '73873',
                             'url': f"https://bibliotheques-specialisees.paris.fr/ark:/73873/{label}",
                             'type': get_type_from_ark(label),
-                            'titre': '',
-                            'auteur': '',
-                            'date': '',
-                            'editeur': '',
-                            'description': '',
-                            'bibliotheque': '',
-                            'cote': '',
+                            'titre': '', 'auteur': '', 'contributeur': '',
+                            'date': '', 'editeur': '', 'description': '',
+                            'bibliotheque': '', 'cote': '', 'type_oai': '',
+                            'sujet': '', 'format_doc': '', 'langue': '',
+                            'droits': '', 'relation': '',
+                            **data
+                        })
+                
+                # CAS 3: Label qui est une composante (/BAP..., /BHP..., /0001...)
+                elif label and label.startswith('/'):
+                    comp_id = label[1:]  # Enlever le /
+                    if (comp_id.startswith('BAP') or 
+                        comp_id.startswith('BHP') or 
+                        comp_id.startswith('BHD') or
+                        re.match(r'^\d{4}$', comp_id)):
+                        # Essayer de reconstruire l'ARK parent depuis le segment
+                        parent_match = re.search(r'ark%253A%252F(\d+)%252F([a-zA-Z0-9\-]+)', segment)
+                        if parent_match:
+                            parent_ark = f"ark:/{parent_match.group(1)}/{parent_match.group(2)}"
+                        else:
+                            parent_ark = "ark:/73873/inconnu"
+                        
+                        components.append({
+                            'ark_notice': parent_ark,
+                            'component_id': comp_id,
+                            'url': url or '',
                             **data
                         })
         
@@ -622,8 +647,10 @@ class MatomoARKExtractor(ctk.CTk):
                 
                 try:
                     # Construire l'URL OAI-PMH - format inmedia d'abord (plus riche)
+                    # L'identifiant OAI doit être préfixé avec oai:bibliotheques-specialisees.paris.fr:
                     ark_identifier = item['ark']
-                    oai_url = f"{OAI_BASE_URL}?verb=GetRecord&identifier={ark_identifier}&metadataPrefix=inmedia"
+                    oai_identifier = f"{OAI_IDENTIFIER_PREFIX}{ark_identifier}"
+                    oai_url = f"{OAI_BASE_URL}?verb=GetRecord&identifier={oai_identifier}&metadataPrefix=inmedia"
                     
                     response = client.get(oai_url)
                     
@@ -632,30 +659,46 @@ class MatomoARKExtractor(ctk.CTk):
                         if 'idDoesNotExist' in response.text or 'noRecordsMatch' in response.text:
                             no_record_count += 1
                             # Essayer avec oai_dc
-                            oai_url2 = f"{OAI_BASE_URL}?verb=GetRecord&identifier={ark_identifier}&metadataPrefix=oai_dc"
+                            oai_url2 = f"{OAI_BASE_URL}?verb=GetRecord&identifier={oai_identifier}&metadataPrefix=oai_dc"
                             response2 = client.get(oai_url2)
                             if response2.status_code == 200 and 'idDoesNotExist' not in response2.text:
                                 metadata = self.parse_oai_response(response2.text, format='oai_dc')
                                 if metadata and metadata.get('title'):
+                                    # Stocker TOUS les champs Dublin Core
                                     item['titre'] = metadata.get('title', '')
                                     item['auteur'] = metadata.get('creator', '')
+                                    item['contributeur'] = metadata.get('contributor', '')
                                     item['date'] = metadata.get('date', '')
                                     item['editeur'] = metadata.get('publisher', '')
-                                    item['description'] = metadata.get('description', '')[:200] if metadata.get('description') else ''
+                                    item['description'] = metadata.get('description', '')[:300] if metadata.get('description') else ''
                                     item['type_oai'] = metadata.get('type', '')
+                                    item['sujet'] = metadata.get('subject', '')
+                                    item['cote'] = metadata.get('identifier', '')
+                                    item['bibliotheque'] = metadata.get('source', '')
+                                    item['format_doc'] = metadata.get('format', '')
+                                    item['langue'] = metadata.get('language', '')
+                                    item['droits'] = metadata.get('rights', '')
+                                    item['relation'] = metadata.get('relation', '')
                                     success_count += 1
                         else:
                             metadata = self.parse_oai_response(response.text, format='inmedia')
                             
                             if metadata:
+                                # Stocker TOUS les champs Dublin Core
                                 item['titre'] = metadata.get('title', '')
                                 item['auteur'] = metadata.get('creator', '')
+                                item['contributeur'] = metadata.get('contributor', '')
                                 item['date'] = metadata.get('date', '')
                                 item['editeur'] = metadata.get('publisher', '')
-                                item['description'] = metadata.get('description', '')[:200] if metadata.get('description') else ''
+                                item['description'] = metadata.get('description', '')[:300] if metadata.get('description') else ''
                                 item['type_oai'] = metadata.get('type', '')
+                                item['sujet'] = metadata.get('subject', '')
                                 item['cote'] = metadata.get('identifier', '')
                                 item['bibliotheque'] = metadata.get('source', '')
+                                item['format_doc'] = metadata.get('format', '')
+                                item['langue'] = metadata.get('language', '')
+                                item['droits'] = metadata.get('rights', '')
+                                item['relation'] = metadata.get('relation', '')
                                 
                                 if metadata.get('title'):
                                     success_count += 1
@@ -677,75 +720,37 @@ class MatomoARKExtractor(ctk.CTk):
             self.log(f"Erreurs réseau: {error_count}", "WARNING")
     
     def parse_oai_response(self, xml_text, format='oai_dc'):
-        """Parse la réponse XML OAI-PMH pour extraire les métadonnées Dublin Core ou InMedia"""
+        """Parse la réponse XML OAI-PMH pour extraire TOUTES les métadonnées Dublin Core"""
         try:
-            # Namespaces OAI-PMH et Dublin Core
-            namespaces = {
-                'oai': 'http://www.openarchives.org/OAI/2.0/',
-                'dc': 'http://purl.org/dc/elements/1.1/',
-                'oai_dc': 'http://www.openarchives.org/OAI/2.0/oai_dc/',
-                'dcterms': 'http://purl.org/dc/terms/'
-            }
-            
             root = ET.fromstring(xml_text)
             metadata = {}
             
-            # Liste des champs Dublin Core à chercher
-            dc_fields = ['title', 'creator', 'date', 'publisher', 'description', 'type', 'subject', 'identifier', 'source', 'format', 'rights']
+            # Liste complète des champs Dublin Core
+            dc_fields = ['title', 'creator', 'date', 'publisher', 'description', 'type', 
+                        'subject', 'identifier', 'source', 'format', 'rights', 'language', 
+                        'relation', 'coverage', 'contributor']
             
             for dc_elem in dc_fields:
-                found_value = None
+                found_values = []
                 
-                # Méthode 1: Avec namespace dc:
-                elem = root.find(f'.//dc:{dc_elem}', namespaces)
-                if elem is not None and elem.text:
-                    found_value = elem.text.strip()
-                
-                # Méthode 2: Avec namespace complet
-                if not found_value:
-                    elem = root.find(f'.//{{{namespaces["dc"]}}}{dc_elem}')
-                    if elem is not None and elem.text:
-                        found_value = elem.text.strip()
-                
-                # Méthode 3: Chercher dans tout l'arbre (sans namespace)
-                if not found_value:
-                    for e in root.iter():
-                        tag_local = e.tag.split('}')[-1] if '}' in e.tag else e.tag
-                        if tag_local.lower() == dc_elem.lower() and e.text:
-                            found_value = e.text.strip()
-                            break
-                
-                # Méthode 4: Format InMedia spécifique (balises en majuscules parfois)
-                if not found_value and format == 'inmedia':
-                    for e in root.iter():
-                        tag_local = e.tag.split('}')[-1] if '}' in e.tag else e.tag
-                        # InMedia utilise parfois Title, Creator, etc.
-                        if tag_local.lower() == dc_elem.lower() and e.text:
-                            found_value = e.text.strip()
-                            break
-                
-                if found_value:
-                    metadata[dc_elem] = found_value
-            
-            # Chercher aussi des champs spécifiques InMedia
-            if format == 'inmedia':
-                # Chercher auteur dans différents champs
-                if not metadata.get('creator'):
-                    for tag in ['author', 'Author', 'contributor', 'Contributor']:
-                        for e in root.iter():
-                            tag_local = e.tag.split('}')[-1] if '}' in e.tag else e.tag
-                            if tag_local == tag and e.text:
-                                metadata['creator'] = e.text.strip()
-                                break
-                        if metadata.get('creator'):
-                            break
-                
-                # Chercher la cote
+                # Chercher tous les éléments avec ce nom (peut y en avoir plusieurs)
                 for e in root.iter():
                     tag_local = e.tag.split('}')[-1] if '}' in e.tag else e.tag
-                    if tag_local.lower() in ['shelfmark', 'callnumber', 'cote'] and e.text:
-                        metadata['identifier'] = e.text.strip()
-                        break
+                    if tag_local.lower() == dc_elem.lower() and e.text:
+                        text = e.text.strip()
+                        if text and text not in found_values:
+                            found_values.append(text)
+                
+                if found_values:
+                    # Pour certains champs, on veut toutes les valeurs séparées par |
+                    if dc_elem in ['subject', 'type', 'rights']:
+                        metadata[dc_elem] = ' | '.join(found_values)
+                    elif dc_elem == 'identifier':
+                        # Garder les identifiants pertinents (ISSN, ISBN, cote)
+                        metadata[dc_elem] = ' | '.join([v for v in found_values if not v.startswith('http')])
+                    else:
+                        # Pour les autres, prendre la première valeur
+                        metadata[dc_elem] = found_values[0]
             
             return metadata if metadata else None
             
@@ -781,9 +786,14 @@ class MatomoARKExtractor(ctk.CTk):
         )
         link_font = Font(color='0563C1', underline='single')
         
-        # En-têtes
+        # En-têtes - Stats Matomo + TOUS les champs Dublin Core
         headers = [
-            'Rang', 'ARK complet', 'ID', 'Type', 'Titre', 'Auteur', 'Date',
+            'Rang', 'ARK complet', 'ID ARK', 'Type ressource',
+            # Métadonnées OAI-PMH
+            'Titre', 'Auteur', 'Contributeur', 'Date', 'Éditeur', 
+            'Bibliothèque / Source', 'Cote / Identifiant', 'Type document', 
+            'Sujets', 'Format', 'Langue', 'Droits', 'Description',
+            # Statistiques Matomo
             'Visites', 'Visiteurs uniques', 'Pages vues', 
             'Temps total (s)', 'Temps moyen', 'Taux rebond', 'Taux sortie',
             'Entrées', 'Sorties', 'URL'
@@ -793,10 +803,10 @@ class MatomoARKExtractor(ctk.CTk):
             cell = ws.cell(row=1, column=col, value=header)
             cell.font = header_font
             cell.fill = header_fill
-            cell.alignment = Alignment(horizontal='center', vertical='center')
+            cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
             cell.border = border
         
-        ws.row_dimensions[1].height = 25
+        ws.row_dimensions[1].height = 30
         
         # Données
         for idx, item in enumerate(self.ark_data, 1):
@@ -806,9 +816,21 @@ class MatomoARKExtractor(ctk.CTk):
                 item['ark'],
                 item['ark_id'],
                 item.get('type', ''),
+                # Métadonnées OAI-PMH
                 item.get('titre', ''),
                 item.get('auteur', ''),
+                item.get('contributeur', ''),
                 item.get('date', ''),
+                item.get('editeur', ''),
+                item.get('bibliotheque', ''),
+                item.get('cote', ''),
+                item.get('type_oai', ''),
+                item.get('sujet', ''),
+                item.get('format_doc', ''),
+                item.get('langue', ''),
+                item.get('droits', ''),
+                item.get('description', ''),
+                # Statistiques Matomo
                 item['nb_visits'],
                 item.get('nb_uniq_visitors', ''),
                 item['nb_hits'],
@@ -832,20 +854,51 @@ class MatomoARKExtractor(ctk.CTk):
                 if col == 5 and value:  # Titre
                     cell.fill = success_fill
                 
-                if col == 17:  # URL
+                if col == 27:  # URL
                     cell.font = link_font
-                    cell.hyperlink = value
-                elif col in [8, 9, 10, 11, 15, 16]:  # Numériques
+                    if value:
+                        cell.hyperlink = value
+                elif col in [18, 19, 20, 21, 25, 26]:  # Numériques
                     cell.alignment = Alignment(horizontal='right')
         
-        # Largeurs colonnes
-        widths = [6, 32, 30, 28, 50, 30, 12, 10, 16, 12, 14, 12, 12, 12, 10, 10, 70]
+        # Largeurs colonnes (27 colonnes maintenant)
+        widths = [
+            6,   # Rang
+            32,  # ARK complet
+            28,  # ID ARK
+            25,  # Type ressource
+            # Métadonnées OAI
+            50,  # Titre
+            30,  # Auteur
+            25,  # Contributeur
+            12,  # Date
+            35,  # Éditeur
+            30,  # Bibliothèque / Source
+            25,  # Cote
+            30,  # Type document
+            40,  # Sujets
+            15,  # Format
+            10,  # Langue
+            25,  # Droits
+            50,  # Description
+            # Stats Matomo
+            10,  # Visites
+            16,  # Visiteurs uniques
+            12,  # Pages vues
+            14,  # Temps total
+            12,  # Temps moyen
+            12,  # Taux rebond
+            12,  # Taux sortie
+            10,  # Entrées
+            10,  # Sorties
+            70   # URL
+        ]
         for i, w in enumerate(widths, 1):
             ws.column_dimensions[get_column_letter(i)].width = w
         
         # Filtre et gel
-        ws.auto_filter.ref = f"A1:Q{len(self.ark_data)+1}"
-        ws.freeze_panes = 'A2'
+        ws.auto_filter.ref = f"A1:AA{len(self.ark_data)+1}"
+        ws.freeze_panes = 'E2'  # Figer les colonnes ARK + scroll sur métadonnées
         
         # === Feuille 2: Résumé ===
         ws2 = wb.create_sheet("Résumé")
@@ -936,33 +989,68 @@ class MatomoARKExtractor(ctk.CTk):
         ws3.column_dimensions['E'].width = 12
         ws3.column_dimensions['F'].width = 12
         
-        # === Feuille 4: Composantes (si activé) ===
-        if self.include_components.get() and self.components_data:
+        # === Feuille 4: Composantes BAP/BHP (toujours générée) ===
+        if self.components_data:
             ws4 = wb.create_sheet("Composantes")
             
-            ws4['A1'] = "📄 Détail par composante / vue"
+            ws4['A1'] = "📄 Détail par composante (BAP, BHP, pages numérisées)"
             ws4['A1'].font = Font(bold=True, size=14)
             
-            headers4 = ['ARK Notice', 'Composante', 'Visites', 'Pages vues', 'Temps (s)', 'URL']
-            for col, h in enumerate(headers4, 1):
-                cell = ws4.cell(row=3, column=col, value=h)
-                cell.font = Font(bold=True)
-                cell.fill = PatternFill('solid', fgColor='d9e2f3')
+            ws4['A2'] = f"Total: {len(self.components_data)} composantes"
+            ws4['A2'].font = Font(italic=True, color='666666')
             
-            for idx, comp in enumerate(self.components_data[:500], 1):  # Limiter à 500
-                ws4.cell(row=idx+3, column=1, value=comp.get('ark_notice', ''))
-                ws4.cell(row=idx+3, column=2, value=comp.get('component_id', ''))
-                ws4.cell(row=idx+3, column=3, value=comp.get('nb_visits', 0))
-                ws4.cell(row=idx+3, column=4, value=comp.get('nb_hits', 0))
-                ws4.cell(row=idx+3, column=5, value=comp.get('sum_time_spent', 0))
-                ws4.cell(row=idx+3, column=6, value=comp.get('url', ''))
+            headers4 = ['ARK Notice', 'ID Composante', 'Type', 'Visites', 'Visiteurs', 'Pages vues', 'Temps (s)', 'Taux rebond', 'URL']
+            for col, h in enumerate(headers4, 1):
+                cell = ws4.cell(row=4, column=col, value=h)
+                cell.font = Font(bold=True, color='FFFFFF')
+                cell.fill = PatternFill('solid', fgColor='5b9bd5')
+            
+            # Trier par visites
+            sorted_components = sorted(self.components_data, key=lambda x: x.get('nb_visits', 0), reverse=True)
+            
+            for idx, comp in enumerate(sorted_components, 1):
+                row = idx + 4
+                # Déterminer le type de composante
+                comp_id = comp.get('component_id', '')
+                if comp_id.startswith('BAP'):
+                    comp_type = 'Archive (BAP)'
+                elif comp_id.startswith('BHP'):
+                    comp_type = 'Archive (BHP)'
+                elif comp_id.isdigit() or (len(comp_id) == 4 and comp_id.isdigit()):
+                    comp_type = 'Page numérisée'
+                else:
+                    comp_type = 'Autre'
+                
+                ws4.cell(row=row, column=1, value=comp.get('ark_notice', ''))
+                ws4.cell(row=row, column=2, value=comp_id)
+                ws4.cell(row=row, column=3, value=comp_type)
+                ws4.cell(row=row, column=4, value=comp.get('nb_visits', 0))
+                ws4.cell(row=row, column=5, value=comp.get('nb_uniq_visitors', ''))
+                ws4.cell(row=row, column=6, value=comp.get('nb_hits', 0))
+                ws4.cell(row=row, column=7, value=comp.get('sum_time_spent', 0))
+                ws4.cell(row=row, column=8, value=comp.get('bounce_rate', ''))
+                url_cell = ws4.cell(row=row, column=9, value=comp.get('url', ''))
+                if comp.get('url'):
+                    url_cell.hyperlink = comp.get('url')
+                    url_cell.font = Font(color='0563C1', underline='single')
+                
+                # Alternance couleurs
+                if idx % 2 == 0:
+                    for c in range(1, 10):
+                        ws4.cell(row=row, column=c).fill = PatternFill('solid', fgColor='deebf7')
             
             ws4.column_dimensions['A'].width = 35
-            ws4.column_dimensions['B'].width = 20
-            ws4.column_dimensions['C'].width = 10
-            ws4.column_dimensions['D'].width = 12
+            ws4.column_dimensions['B'].width = 18
+            ws4.column_dimensions['C'].width = 18
+            ws4.column_dimensions['D'].width = 10
             ws4.column_dimensions['E'].width = 12
-            ws4.column_dimensions['F'].width = 70
+            ws4.column_dimensions['F'].width = 12
+            ws4.column_dimensions['G'].width = 12
+            ws4.column_dimensions['H'].width = 12
+            ws4.column_dimensions['I'].width = 75
+            
+            ws4.auto_filter.ref = f"A4:I{len(self.components_data)+4}"
+            ws4.freeze_panes = 'A5'
         
         # Sauvegarder
         wb.save(output_path)
