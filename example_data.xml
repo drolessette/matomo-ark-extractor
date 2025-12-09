@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<r>
+  <row>
+    <label>ark:</label>
+    <nb_visits>100</nb_visits>
+    <nb_hits>250</nb_hits>
+    <subtable>
+      <row>
+        <label>73873</label>
+        <nb_visits>100</nb_visits>
+        <subtable>
+          <row>
+            <label>/pf0000123456</label>
+            <nb_visits>50</nb_visits>
+            <nb_uniq_visitors>45</nb_uniq_visitors>
+            <nb_hits>80</nb_hits>
+            <sum_time_spent>500</sum_time_spent>
+            <avg_time_on_page>00:00:10</avg_time_on_page>
+            <bounce_rate>30 %</bounce_rate>
+            <exit_rate>25 %</exit_rate>
+            <url>https://bibliotheques-specialisees.paris.fr/ark:/73873/pf0000123456</url>
+          </row>
+          <row>
+            <label>/pf0000789012</label>
+            <nb_visits>30</nb_visits>
+            <nb_uniq_visitors>28</nb_uniq_visitors>
+            <nb_hits>45</nb_hits>
+            <sum_time_spent>300</sum_time_spent>
+            <avg_time_on_page>00:00:08</avg_time_on_page>
+            <bounce_rate>40 %</bounce_rate>
+            <exit_rate>35 %</exit_rate>
+            <url>https://bibliotheques-specialisees.paris.fr/ark:/73873/pf0000789012</url>
+          </row>
+          <row>
+            <label>/FRCGMNOV-751045102-ABC</label>
+            <nb_visits>20</nb_visits>
+            <nb_uniq_visitors>18</nb_uniq_visitors>
+            <nb_hits>35</nb_hits>
+            <sum_time_spent>200</sum_time_spent>
+            <avg_time_on_page>00:00:06</avg_time_on_page>
+            <bounce_rate>50 %</bounce_rate>
+            <exit_rate>45 %</exit_rate>
+            <url>https://bibliotheques-specialisees.paris.fr/ark:/73873/FRCGMNOV-751045102-ABC</url>
+          </row>
+        </subtable>
+      </row>
+    </subtable>
+  </row>
+</r>
