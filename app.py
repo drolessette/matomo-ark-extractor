@@ -28,13 +28,17 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
-# Requêtes HTTP
-import httpx
+# Requêtes HTTP - utiliser requests pour meilleure compatibilité réseau entreprise
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 # Désactiver les warnings SSL (nécessaire pour les réseaux d'entreprise avec proxy/certificat interne)
 import warnings
 warnings.filterwarnings('ignore', message='Unverified HTTPS request')
 warnings.filterwarnings('ignore', category=DeprecationWarning)
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # Configuration CustomTkinter
 ctk.set_appearance_mode("dark")
@@ -688,101 +692,110 @@ class MatomoARKExtractor(ctk.CTk):
         error_count = 0
         no_record_count = 0
         
-        with httpx.Client(
-            timeout=30.0, 
-            follow_redirects=True,
-            verify=False,  # Désactiver la vérification SSL (nécessaire pour certains réseaux d'entreprise)
-            headers={
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': 'application/xml, text/xml, */*',
-            }
-        ) as client:
-            for i, item in enumerate(self.ark_data):
-                # Mise à jour progression
-                progress = 0.2 + (i / max(total, 1)) * 0.6
-                self.progress_value.set(progress)
-                self.status_text.set(f"Métadonnées: {i+1}/{total} - {item['ark_id'][:20]}...")
+        # Créer une session requests avec retry automatique
+        session = requests.Session()
+        retry_strategy = Retry(
+            total=3,
+            backoff_factor=1,
+            status_forcelist=[429, 500, 502, 503, 504],
+        )
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        session.mount("https://", adapter)
+        session.mount("http://", adapter)
+        session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'application/xml, text/xml, */*',
+        })
+        
+        for i, item in enumerate(self.ark_data):
+            # Mise à jour progression
+            progress = 0.2 + (i / max(total, 1)) * 0.6
+            self.progress_value.set(progress)
+            self.status_text.set(f"Métadonnées: {i+1}/{total} - {item['ark_id'][:20]}...")
+            
+            ark_identifier = item['ark']
+            oai_identifier = f"{OAI_IDENTIFIER_PREFIX}{ark_identifier}"
+            
+            metadata = None
+            last_response_text = None
+            working_format = None
+            
+            # Tester chaque format jusqu'à en trouver un qui fonctionne
+            for meta_prefix in METADATA_PREFIXES:
+                oai_url = f"{OAI_BASE_URL}?verb=GetRecord&identifier={oai_identifier}&metadataPrefix={meta_prefix}"
                 
-                ark_identifier = item['ark']
-                oai_identifier = f"{OAI_IDENTIFIER_PREFIX}{ark_identifier}"
+                # Log détaillé pour les 3 premières notices
+                if i < 3:
+                    self.log(f"  Test {meta_prefix} pour {item['ark_id']}", "PROGRESS")
                 
-                metadata = None
-                last_response_text = None
-                working_format = None
-                
-                # Tester chaque format jusqu'à en trouver un qui fonctionne
-                for meta_prefix in METADATA_PREFIXES:
-                    oai_url = f"{OAI_BASE_URL}?verb=GetRecord&identifier={oai_identifier}&metadataPrefix={meta_prefix}"
+                try:
+                    response = session.get(oai_url, timeout=30, verify=False)
+                    last_response_text = response.text
                     
-                    # Log détaillé pour les 3 premières notices
                     if i < 3:
-                        self.log(f"  Test {meta_prefix} pour {item['ark_id']}", "PROGRESS")
+                        self.log(f"    → HTTP {response.status_code}, {len(response.text)} chars", "PROGRESS")
                     
-                    try:
-                        response = client.get(oai_url)
-                        last_response_text = response.text
-                        
-                        if i < 3:
-                            self.log(f"    → HTTP {response.status_code}, {len(response.text)} chars", "PROGRESS")
-                        
-                        if response.status_code != 200:
-                            continue
-                        
-                        # Vérifier les erreurs OAI
-                        if 'idDoesNotExist' in response.text or 'noRecordsMatch' in response.text:
-                            continue
-                        
-                        if '<error' in response.text and 'cannotDisseminateFormat' in response.text:
-                            continue
-                        
-                        if '<error' in response.text:
-                            continue
-                        
-                        # Parser la réponse
-                        metadata = self.parse_oai_response(response.text)
-                        
-                        if metadata and metadata.get('title'):
-                            working_format = meta_prefix
-                            break  # On a trouvé un format qui fonctionne !
-                            
-                    except Exception as e:
-                        if i < 3:
-                            self.log(f"    Exception: {str(e)[:50]}", "WARNING")
+                    if response.status_code != 200:
                         continue
-                
-                # Stocker les métadonnées si on en a trouvé
-                if metadata and metadata.get('title'):
-                    item['titre'] = metadata.get('title', '')
-                    item['auteur'] = metadata.get('creator', '')
-                    item['contributeur'] = metadata.get('contributor', '')
-                    item['date'] = metadata.get('date', '')
-                    item['editeur'] = metadata.get('publisher', '')
-                    item['description'] = metadata.get('description', '')[:300] if metadata.get('description') else ''
-                    item['type_oai'] = metadata.get('type', '')
-                    item['sujet'] = metadata.get('subject', '')
-                    item['cote'] = metadata.get('identifier', '')
-                    item['bibliotheque'] = metadata.get('source', '')
-                    item['format_doc'] = metadata.get('format', '')
-                    item['langue'] = metadata.get('language', '')
-                    item['droits'] = metadata.get('rights', '')
-                    item['relation'] = metadata.get('relation', '')
                     
-                    success_count += 1
-                    if success_count <= 5:
-                        self.log(f"  ✓ [{working_format}] {item['ark_id']}: {item['titre'][:50]}...", "DATA")
-                else:
-                    # Analyser pourquoi ça n'a pas marché
-                    if last_response_text:
-                        if 'idDoesNotExist' in last_response_text or 'noRecordsMatch' in last_response_text:
-                            no_record_count += 1
-                            if no_record_count <= 3:
-                                self.log(f"  Notice non trouvée: {item['ark_id']}", "WARNING")
-                        else:
-                            error_count += 1
-                            if error_count <= 3:
-                                self.log(f"  Pas de métadonnées pour {item['ark_id']}", "WARNING")
+                    # Vérifier les erreurs OAI
+                    if 'idDoesNotExist' in response.text or 'noRecordsMatch' in response.text:
+                        continue
+                    
+                    if '<error' in response.text and 'cannotDisseminateFormat' in response.text:
+                        continue
+                    
+                    if '<error' in response.text:
+                        continue
+                    
+                    # Parser la réponse
+                    metadata = self.parse_oai_response(response.text)
+                    
+                    if metadata and metadata.get('title'):
+                        working_format = meta_prefix
+                        break  # On a trouvé un format qui fonctionne !
+                        
+                except Exception as e:
+                    if i < 3:
+                        self.log(f"    Exception: {str(e)[:50]}", "WARNING")
+                    continue
+            
+            # Stocker les métadonnées si on en a trouvé
+            if metadata and metadata.get('title'):
+                item['titre'] = metadata.get('title', '')
+                item['auteur'] = metadata.get('creator', '')
+                item['contributeur'] = metadata.get('contributor', '')
+                item['date'] = metadata.get('date', '')
+                item['editeur'] = metadata.get('publisher', '')
+                item['description'] = metadata.get('description', '')[:300] if metadata.get('description') else ''
+                item['type_oai'] = metadata.get('type', '')
+                item['sujet'] = metadata.get('subject', '')
+                item['cote'] = metadata.get('identifier', '')
+                item['bibliotheque'] = metadata.get('source', '')
+                item['format_doc'] = metadata.get('format', '')
+                item['langue'] = metadata.get('language', '')
+                item['droits'] = metadata.get('rights', '')
+                item['relation'] = metadata.get('relation', '')
+                
+                success_count += 1
+                if success_count <= 5:
+                    self.log(f"  ✓ [{working_format}] {item['ark_id']}: {item['titre'][:50]}...", "DATA")
+            else:
+                # Analyser pourquoi ça n'a pas marché
+                if last_response_text:
+                    if 'idDoesNotExist' in last_response_text or 'noRecordsMatch' in last_response_text:
+                        no_record_count += 1
+                        if no_record_count <= 3:
+                            self.log(f"  Notice non trouvée: {item['ark_id']}", "WARNING")
                     else:
                         error_count += 1
+                        if error_count <= 3:
+                            self.log(f"  Pas de métadonnées pour {item['ark_id']}", "WARNING")
+                else:
+                    error_count += 1
+        
+        # Fermer la session
+        session.close()
         
         self.log(f"", "INFO")
         self.log(f"=== Bilan OAI-PMH ===", "INFO")
