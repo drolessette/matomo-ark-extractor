@@ -31,6 +31,12 @@ from openpyxl.utils import get_column_letter
 # Requêtes HTTP
 import httpx
 
+# Désactiver les warnings SSL (nécessaire pour les réseaux d'entreprise avec proxy/certificat interne)
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+import warnings
+warnings.filterwarnings('ignore', message='Unverified HTTPS request')
+
 # Configuration CustomTkinter
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
@@ -668,6 +674,7 @@ class MatomoARKExtractor(ctk.CTk):
         with httpx.Client(
             timeout=30.0, 
             follow_redirects=True,
+            verify=False,  # Désactiver la vérification SSL (nécessaire pour certains réseaux d'entreprise)
             headers={
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                 'Accept': 'application/xml, text/xml, */*',
