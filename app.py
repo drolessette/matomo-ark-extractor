@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Matomo ARK Extractor v2.0
+Matomo ARK Extractor v2.1 (Correctif OAI + Logs)
 Extraction des statistiques ARK depuis les exports Matomo XML
 avec récupération des métadonnées via l'API OAI-PMH du catalogue Portfolio
 
@@ -59,7 +59,7 @@ class MatomoARKExtractor(ctk.CTk):
         super().__init__()
         
         # Configuration fenêtre
-        self.title("📚 Matomo ARK Extractor v2.0 - Bibliothèques spécialisées Paris")
+        self.title("📚 Matomo ARK Extractor v2.1 - Correctif OAI")
         self.geometry("1100x800")
         self.minsize(900, 650)
         
@@ -70,6 +70,7 @@ class MatomoARKExtractor(ctk.CTk):
         self.scrape_metadata = ctk.BooleanVar(value=True)
         self.include_components = ctk.BooleanVar(value=False)
         self.ark_data = []
+        self.components_data = [] # Ajout initialisation
         self.is_processing = False
         
         # Interface
@@ -129,7 +130,7 @@ class MatomoARKExtractor(ctk.CTk):
         
         for text, color in [("Bibliothèques spécialisées", COLORS['primary']), 
                             ("Ville de Paris", COLORS['accent']),
-                            ("v2.0 - OAI-PMH", COLORS['success'])]:
+                            ("v2.1 Fix", COLORS['success'])]:
             badge = ctk.CTkLabel(
                 badges_frame,
                 text=text,
@@ -329,8 +330,7 @@ class MatomoARKExtractor(ctk.CTk):
         self.log_textbox.pack(fill="both", expand=True, pady=(10, 0))
         self.log("🚀 Prêt ! Sélectionnez un fichier XML Matomo pour commencer.")
         self.log("")
-        self.log("ℹ️  Cette version utilise l'API OAI-PMH pour récupérer les métadonnées.")
-        self.log("   Endpoint: " + OAI_BASE_URL)
+        self.log("ℹ️  Correctif appliqué : Ajustement format identifiant OAI pour Paris.")
     
     def create_footer(self):
         footer_frame = ctk.CTkFrame(self.main_frame, fg_color="transparent")
@@ -345,14 +345,14 @@ class MatomoARKExtractor(ctk.CTk):
         
         ctk.CTkLabel(
             footer_frame,
-            text="v2.0 - OAI-PMH",
+            text="v2.1 Fix",
             font=ctk.CTkFont(size=11),
             text_color=COLORS['accent']
         ).pack(side="right")
     
     def log(self, message, level="INFO"):
         timestamp = datetime.now().strftime("%H:%M:%S")
-        icons = {"INFO": "ℹ️", "SUCCESS": "✅", "ERROR": "❌", "WARNING": "⚠️", "PROGRESS": "🔄", "DATA": "📄"}
+        icons = {"INFO": "ℹ️", "SUCCESS": "✅", "ERROR": "❌", "WARNING": "⚠️", "PROGRESS": "🔄", "DATA": "📄", "DEBUG": "🐞"}
         icon = icons.get(level, "")
         
         if level == "INFO" and message.startswith("ℹ️"):
@@ -411,9 +411,14 @@ class MatomoARKExtractor(ctk.CTk):
                 self.log("Aucune donnée ARK trouvée dans le fichier", "ERROR")
                 return
             
-            self.log(f"Trouvé {len(self.ark_data)} notices ARK uniques", "SUCCESS")
+            self.log(f"Trouvé {len(self.ark_data)} notices ARK uniques après regroupement", "SUCCESS")
+            
+            if len(self.ark_data) > 0 and len(self.ark_data) < 10:
+                self.log("Note : Peu de notices trouvées. Vérifiez si Matomo ne limite pas l'export.", "INFO")
+
             if self.components_data:
-                self.log(f"Trouvé {len(self.components_data)} composantes/vues", "SUCCESS")
+                self.log(f"Trouvé {len(self.components_data)} composantes/vues (détail)", "INFO")
+            
             self.count_label.configure(text=f"{len(self.ark_data)} notices")
             
             # 2. Récupérer les métadonnées si demandé
@@ -453,13 +458,18 @@ class MatomoARKExtractor(ctk.CTk):
     
     def parse_xml(self, xml_path):
         """Parse le fichier XML Matomo et extrait les données ARK"""
-        self.log("Parsing du fichier XML...")
+        self.log("Parsing du fichier XML en cours...")
         
-        tree = ET.parse(xml_path)
-        root = tree.getroot()
+        try:
+            tree = ET.parse(xml_path)
+            root = tree.getroot()
+        except ET.ParseError as e:
+            self.log(f"Erreur de lecture XML: {e}", "ERROR")
+            return [], []
         
         notices = []  # Niveau notice (pf..., FRCGM...)
         components = []  # Niveau composante (BAP..., vues...)
+        raw_row_count = 0
         
         def get_type_from_ark(ark_id):
             """Détermine le type de ressource depuis l'identifiant ARK"""
@@ -474,116 +484,118 @@ class MatomoARKExtractor(ctk.CTk):
             else:
                 return 'Autre'
         
-        def extract_rows(element, parent_ark=None):
-            for row in element.findall('.//row'):
-                label = row.findtext('label', '')
-                url_elem = row.find('url')
-                url = url_elem.text if url_elem is not None else None
-                segment = row.findtext('segment', '')
-                
-                # Données Matomo
-                data = {
-                    'nb_visits': int(row.findtext('nb_visits', '0') or 0),
-                    'nb_uniq_visitors': row.findtext('nb_uniq_visitors', '') or row.findtext('sum_daily_nb_uniq_visitors', ''),
-                    'nb_hits': int(row.findtext('nb_hits', '0') or 0),
-                    'sum_time_spent': int(row.findtext('sum_time_spent', '0') or 0),
-                    'avg_time_on_page': row.findtext('avg_time_on_page', ''),
-                    'bounce_rate': row.findtext('bounce_rate', ''),
-                    'exit_rate': row.findtext('exit_rate', ''),
-                    'entry_nb_visits': row.findtext('entry_nb_visits', ''),
-                    'entry_bounce_count': row.findtext('entry_bounce_count', ''),
-                    'exit_nb_visits': row.findtext('exit_nb_visits', ''),
-                }
-                
-                # CAS 1: URL explicite avec ARK
-                if url and '/ark:/' in url:
-                    # Extraire l'ARK de l'URL
-                    ark_match = re.search(r'ark:/(\d+)/([a-zA-Z0-9\-]+)(?:/([a-zA-Z0-9\-\.]+))?', url)
-                    if ark_match:
-                        naan = ark_match.group(1)
-                        ark_id = ark_match.group(2)
-                        component_id = ark_match.group(3)  # Peut être None
-                        
-                        ark_full = f"ark:/{naan}/{ark_id}"
-                        
-                        # Est-ce une composante ?
-                        is_component = False
-                        if component_id:
-                            if (component_id.startswith('BAP') or 
-                                component_id.startswith('BHP') or
-                                component_id.startswith('BHD') or
-                                re.match(r'^\d{4}$', component_id)):
-                                is_component = True
-                        
-                        if is_component:
-                            components.append({
-                                'ark_notice': ark_full,
-                                'component_id': component_id,
-                                'url': url,
+        # Nous allons parcourir récursivement pour trouver toutes les lignes <row>
+        all_rows = root.findall('.//row')
+        raw_row_count = len(all_rows)
+        self.log(f"Lignes brutes dans le XML : {raw_row_count}", "INFO")
+
+        for row in all_rows:
+            label = row.findtext('label', '')
+            url_elem = row.find('url')
+            url = url_elem.text if url_elem is not None else None
+            segment = row.findtext('segment', '')
+            
+            # Données Matomo
+            data = {
+                'nb_visits': int(row.findtext('nb_visits', '0') or 0),
+                'nb_uniq_visitors': row.findtext('nb_uniq_visitors', '') or row.findtext('sum_daily_nb_uniq_visitors', ''),
+                'nb_hits': int(row.findtext('nb_hits', '0') or 0),
+                'sum_time_spent': int(row.findtext('sum_time_spent', '0') or 0),
+                'avg_time_on_page': row.findtext('avg_time_on_page', ''),
+                'bounce_rate': row.findtext('bounce_rate', ''),
+                'exit_rate': row.findtext('exit_rate', ''),
+                'entry_nb_visits': row.findtext('entry_nb_visits', ''),
+                'entry_bounce_count': row.findtext('entry_bounce_count', ''),
+                'exit_nb_visits': row.findtext('exit_nb_visits', ''),
+            }
+            
+            # CAS 1: URL explicite avec ARK
+            if url and '/ark:/' in url:
+                # Extraire l'ARK de l'URL - Regex améliorée pour inclure underscores et points
+                ark_match = re.search(r'ark:/(\d+)/([a-zA-Z0-9\-\._]+)(?:/([a-zA-Z0-9\-\.]+))?', url)
+                if ark_match:
+                    naan = ark_match.group(1)
+                    ark_id = ark_match.group(2)
+                    component_id = ark_match.group(3)  # Peut être None
+                    
+                    ark_full = f"ark:/{naan}/{ark_id}"
+                    
+                    # Est-ce une composante ?
+                    is_component = False
+                    if component_id:
+                        if (component_id.startswith('BAP') or 
+                            component_id.startswith('BHP') or
+                            component_id.startswith('BHD') or
+                            re.match(r'^\d{4}$', component_id)):
+                            is_component = True
+                    
+                    if is_component:
+                        components.append({
+                            'ark_notice': ark_full,
+                            'component_id': component_id,
+                            'url': url,
+                            **data
+                        })
+                    else:
+                        # C'est une notice ou une vue
+                        # Ignorer les vues techniques (v0001.simple.selectedTab=record...)
+                        if not (component_id and ('selectedTab' in component_id or 'highlight' in component_id or component_id.startswith('v0'))):
+                            # Nettoyer l'URL des paramètres de vue
+                            clean_url = re.sub(r'/v\d+\..*$', '', url)
+                            clean_url = re.sub(r'\?.*$', '', clean_url)
+                            
+                            notices.append({
+                                'ark': ark_full,
+                                'ark_id': ark_id,
+                                'naan': naan,
+                                'url': clean_url,
+                                'type': get_type_from_ark(ark_id),
+                                'titre': '', 'auteur': '', 'contributeur': '',
+                                'date': '', 'editeur': '', 'description': '',
+                                'bibliotheque': '', 'cote': '', 'type_oai': '',
+                                'sujet': '', 'format_doc': '', 'langue': '',
+                                'droits': '', 'relation': '',
                                 **data
                             })
-                        else:
-                            # C'est une notice ou une vue
-                            # Ignorer les vues (v0001.simple.selectedTab=record...)
-                            if not (component_id and ('selectedTab' in component_id or 'highlight' in component_id or component_id.startswith('v0'))):
-                                # Nettoyer l'URL des paramètres de vue
-                                clean_url = re.sub(r'/v\d+\..*$', '', url)
-                                clean_url = re.sub(r'\?.*$', '', clean_url)
-                                
-                                notices.append({
-                                    'ark': ark_full,
-                                    'ark_id': ark_id,
-                                    'naan': naan,
-                                    'url': clean_url,
-                                    'type': get_type_from_ark(ark_id),
-                                    'titre': '', 'auteur': '', 'contributeur': '',
-                                    'date': '', 'editeur': '', 'description': '',
-                                    'bibliotheque': '', 'cote': '', 'type_oai': '',
-                                    'sujet': '', 'format_doc': '', 'langue': '',
-                                    'droits': '', 'relation': '',
-                                    **data
-                                })
-                
-                # CAS 2: Label qui est un identifiant de notice (niveau 3)
-                elif label and not label.startswith('/') and label not in ['ark:', '73873', 'Autres']:
-                    if re.match(r'^(pf|FRCGM)', label):
-                        ark_full = f"ark:/73873/{label}"
-                        notices.append({
-                            'ark': ark_full,
-                            'ark_id': label,
-                            'naan': '73873',
-                            'url': f"https://bibliotheques-specialisees.paris.fr/ark:/73873/{label}",
-                            'type': get_type_from_ark(label),
-                            'titre': '', 'auteur': '', 'contributeur': '',
-                            'date': '', 'editeur': '', 'description': '',
-                            'bibliotheque': '', 'cote': '', 'type_oai': '',
-                            'sujet': '', 'format_doc': '', 'langue': '',
-                            'droits': '', 'relation': '',
-                            **data
-                        })
-                
-                # CAS 3: Label qui est une composante (/BAP..., /BHP..., /0001...)
-                elif label and label.startswith('/'):
-                    comp_id = label[1:]  # Enlever le /
-                    if (comp_id.startswith('BAP') or 
-                        comp_id.startswith('BHP') or 
-                        comp_id.startswith('BHD') or
-                        re.match(r'^\d{4}$', comp_id)):
-                        # Essayer de reconstruire l'ARK parent depuis le segment
-                        parent_match = re.search(r'ark%253A%252F(\d+)%252F([a-zA-Z0-9\-]+)', segment)
-                        if parent_match:
-                            parent_ark = f"ark:/{parent_match.group(1)}/{parent_match.group(2)}"
-                        else:
-                            parent_ark = "ark:/73873/inconnu"
-                        
-                        components.append({
-                            'ark_notice': parent_ark,
-                            'component_id': comp_id,
-                            'url': url or '',
-                            **data
-                        })
-        
-        extract_rows(root)
+            
+            # CAS 2: Label qui est un identifiant de notice (niveau 3)
+            elif label and not label.startswith('/') and label not in ['ark:', '73873', 'Autres']:
+                if re.match(r'^(pf|FRCGM)', label):
+                    ark_full = f"ark:/73873/{label}"
+                    notices.append({
+                        'ark': ark_full,
+                        'ark_id': label,
+                        'naan': '73873',
+                        'url': f"https://bibliotheques-specialisees.paris.fr/ark:/73873/{label}",
+                        'type': get_type_from_ark(label),
+                        'titre': '', 'auteur': '', 'contributeur': '',
+                        'date': '', 'editeur': '', 'description': '',
+                        'bibliotheque': '', 'cote': '', 'type_oai': '',
+                        'sujet': '', 'format_doc': '', 'langue': '',
+                        'droits': '', 'relation': '',
+                        **data
+                    })
+            
+            # CAS 3: Label qui est une composante (/BAP..., /BHP..., /0001...)
+            elif label and label.startswith('/'):
+                comp_id = label[1:]  # Enlever le /
+                if (comp_id.startswith('BAP') or 
+                    comp_id.startswith('BHP') or 
+                    comp_id.startswith('BHD') or
+                    re.match(r'^\d{4}$', comp_id)):
+                    # Essayer de reconstruire l'ARK parent depuis le segment
+                    parent_match = re.search(r'ark%253A%252F(\d+)%252F([a-zA-Z0-9\-\._]+)', segment)
+                    if parent_match:
+                        parent_ark = f"ark:/{parent_match.group(1)}/{parent_match.group(2)}"
+                    else:
+                        parent_ark = "ark:/73873/inconnu"
+                    
+                    components.append({
+                        'ark_notice': parent_ark,
+                        'component_id': comp_id,
+                        'url': url or '',
+                        **data
+                    })
         
         # Agréger par ARK unique (notices)
         aggregated = defaultdict(lambda: {
@@ -621,18 +633,12 @@ class MatomoARKExtractor(ctk.CTk):
         # Trier par visites
         result_notices.sort(key=lambda x: x['nb_visits'], reverse=True)
         
-        # Logger les top 5
-        self.log("Top 5 des notices les plus consultées:")
-        for i, item in enumerate(result_notices[:5], 1):
-            self.log(f"  #{i}: {item['ark_id']} - {item['nb_visits']} visites", "DATA")
-        
         return result_notices, components
     
     def fetch_oai_metadata(self):
         """Récupère les métadonnées via l'API OAI-PMH"""
         total = len(self.ark_data)
         self.log(f"Récupération des métadonnées pour {total} notices via OAI-PMH...")
-        self.log(f"Endpoint: {OAI_BASE_URL}")
         
         success_count = 0
         error_count = 0
@@ -643,16 +649,22 @@ class MatomoARKExtractor(ctk.CTk):
                 # Mise à jour progression
                 progress = 0.2 + (i / total) * 0.6
                 self.progress_value.set(progress)
-                self.status_text.set(f"Métadonnées: {i+1}/{total} - {item['ark_id'][:20]}...")
+                if i % 5 == 0:
+                    self.status_text.set(f"Métadonnées: {i+1}/{total}")
                 
                 try:
-                    # Construire l'URL OAI-PMH - utiliser oai_dc (format standard Dublin Core)
-                    # L'identifiant OAI doit être préfixé avec oai:bibliotheques-specialisees.paris.fr:
-                    ark_identifier = item['ark']
-                    oai_identifier = f"{OAI_IDENTIFIER_PREFIX}{ark_identifier}"
+                    # --- CORRECTION MAJEURE ICI ---
+                    # L'identifiant OAI pour Paris est souvent "oai:...:ark:73873/..." et non "ark:/..."
+                    # On retire le "/" après "ark:" pour la construction de l'ID OAI
+                    clean_ark_suffix = item['ark'].replace('ark:/', 'ark:')
+                    
+                    oai_identifier = f"{OAI_IDENTIFIER_PREFIX}{clean_ark_suffix}"
                     oai_url = f"{OAI_BASE_URL}?verb=GetRecord&identifier={oai_identifier}&metadataPrefix=oai_dc"
                     
-                    self.log(f"  Requête: {item['ark_id']}", "PROGRESS") if i < 3 else None
+                    # Log de la première URL pour débuggage utilisateur
+                    if i == 0:
+                        self.log(f"TEST URL (vérifiez dans navigateur si erreur):", "DEBUG")
+                        self.log(f"{oai_url}", "DEBUG")
                     
                     response = client.get(oai_url)
                     
@@ -660,24 +672,24 @@ class MatomoARKExtractor(ctk.CTk):
                         # Vérifier si c'est une erreur "idDoesNotExist"
                         if 'idDoesNotExist' in response.text or 'noRecordsMatch' in response.text:
                             no_record_count += 1
-                            if no_record_count <= 3:
-                                self.log(f"  Notice non trouvée: {item['ark_id']}", "WARNING")
+                            if no_record_count <= 2:
+                                self.log(f"  Notice non trouvée (ID incorrect ?): {item['ark_id']}", "WARNING")
                         elif '<error' in response.text:
                             error_count += 1
-                            if error_count <= 3:
-                                self.log(f"  Erreur OAI pour {item['ark_id']}", "WARNING")
+                            if error_count <= 2:
+                                self.log(f"  Erreur OAI explicite pour {item['ark_id']}", "WARNING")
                         else:
                             # Parser la réponse OAI-PMH
                             metadata = self.parse_oai_response(response.text)
                             
-                            if metadata and metadata.get('title'):
+                            if metadata and (metadata.get('title') or metadata.get('identifier')):
                                 # Stocker TOUS les champs Dublin Core
                                 item['titre'] = metadata.get('title', '')
                                 item['auteur'] = metadata.get('creator', '')
                                 item['contributeur'] = metadata.get('contributor', '')
                                 item['date'] = metadata.get('date', '')
                                 item['editeur'] = metadata.get('publisher', '')
-                                item['description'] = metadata.get('description', '')[:300] if metadata.get('description') else ''
+                                item['description'] = metadata.get('description', '')[:500] if metadata.get('description') else ''
                                 item['type_oai'] = metadata.get('type', '')
                                 item['sujet'] = metadata.get('subject', '')
                                 item['cote'] = metadata.get('identifier', '')
@@ -689,10 +701,9 @@ class MatomoARKExtractor(ctk.CTk):
                                 
                                 success_count += 1
                                 # Log les premiers succès pour feedback
-                                if success_count <= 5:
-                                    self.log(f"  ✓ {item['ark_id']}: {item['titre'][:50]}...", "DATA")
+                                if success_count <= 3:
+                                    self.log(f"  ✓ Trouvé: {item['titre'][:40]}...", "DATA")
                             else:
-                                # Pas de métadonnées trouvées dans la réponse
                                 no_record_count += 1
                     else:
                         error_count += 1
@@ -701,18 +712,16 @@ class MatomoARKExtractor(ctk.CTk):
                     
                 except Exception as e:
                     error_count += 1
-                    if error_count <= 5:
-                        self.log(f"Erreur pour {item['ark_id']}: {str(e)[:50]}", "WARNING")
+                    if error_count <= 3:
+                        self.log(f"Erreur technique pour {item['ark_id']}: {str(e)[:50]}", "WARNING")
         
-        self.log(f"Métadonnées récupérées: {success_count} titres trouvés sur {total}", "SUCCESS")
-        if no_record_count > 0:
-            self.log(f"Notices non trouvées dans OAI: {no_record_count} (peut-être non numérisées)", "WARNING")
-        if error_count > 0:
-            self.log(f"Erreurs réseau: {error_count}", "WARNING")
+        self.log(f"Bilan Métadonnées: {success_count} trouvées / {no_record_count} absentes / {error_count} erreurs", "SUCCESS" if success_count > 0 else "WARNING")
     
     def parse_oai_response(self, xml_text):
         """Parse la réponse XML OAI-PMH pour extraire TOUTES les métadonnées Dublin Core"""
         try:
+            # Nettoyage basique des namespaces qui peuvent gêner ElementTree parfois
+            # (Approche robuste: ignorer les préfixes lors de la recherche)
             root = ET.fromstring(xml_text)
             metadata = {}
             
@@ -721,27 +730,31 @@ class MatomoARKExtractor(ctk.CTk):
                         'subject', 'identifier', 'source', 'format', 'rights', 'language', 
                         'relation', 'coverage', 'contributor']
             
+            # On parcourt tout l'arbre pour trouver les balises finissant par le nom du champ
             for dc_elem in dc_fields:
                 found_values = []
                 
-                # Chercher tous les éléments avec ce nom (peut y en avoir plusieurs)
                 for e in root.iter():
-                    tag_local = e.tag.split('}')[-1] if '}' in e.tag else e.tag
-                    if tag_local.lower() == dc_elem.lower() and e.text:
+                    # Gestion robuste des namespaces (ex: {http://purl.org/dc/elements/1.1/}title)
+                    tag_name = e.tag.split('}')[-1] if '}' in e.tag else e.tag
+                    
+                    if tag_name.lower() == dc_elem.lower() and e.text:
                         text = e.text.strip()
                         if text and text not in found_values:
                             found_values.append(text)
                 
                 if found_values:
-                    # Pour certains champs, on veut toutes les valeurs séparées par |
-                    if dc_elem in ['subject', 'type', 'rights']:
+                    # Concaténation avec ' | '
+                    if dc_elem in ['subject', 'type', 'rights', 'relation']:
                         metadata[dc_elem] = ' | '.join(found_values)
                     elif dc_elem == 'identifier':
-                        # Garder les identifiants pertinents (ISSN, ISBN, cote) mais pas les URLs
-                        non_url = [v for v in found_values if not v.startswith('http')]
-                        metadata[dc_elem] = ' | '.join(non_url) if non_url else ''
+                        # Filtrer les identifiants qui sont des URLs OAI
+                        valid_ids = [v for v in found_values if not v.startswith('http') and not v.startswith('oai:')]
+                        # Si vide, prendre tout
+                        if not valid_ids and found_values:
+                            valid_ids = found_values
+                        metadata[dc_elem] = ' | '.join(valid_ids)
                     else:
-                        # Pour les autres, prendre la première valeur
                         metadata[dc_elem] = found_values[0]
             
             return metadata if metadata else None
