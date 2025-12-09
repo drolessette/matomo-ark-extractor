@@ -32,10 +32,9 @@ from openpyxl.utils import get_column_letter
 import httpx
 
 # Désactiver les warnings SSL (nécessaire pour les réseaux d'entreprise avec proxy/certificat interne)
-import urllib3
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 import warnings
 warnings.filterwarnings('ignore', message='Unverified HTTPS request')
+warnings.filterwarnings('ignore', category=DeprecationWarning)
 
 # Configuration CustomTkinter
 ctk.set_appearance_mode("dark")
