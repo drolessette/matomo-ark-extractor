@@ -646,11 +646,13 @@ class MatomoARKExtractor(ctk.CTk):
                 self.status_text.set(f"Métadonnées: {i+1}/{total} - {item['ark_id'][:20]}...")
                 
                 try:
-                    # Construire l'URL OAI-PMH - format inmedia d'abord (plus riche)
+                    # Construire l'URL OAI-PMH - utiliser oai_dc (format standard Dublin Core)
                     # L'identifiant OAI doit être préfixé avec oai:bibliotheques-specialisees.paris.fr:
                     ark_identifier = item['ark']
                     oai_identifier = f"{OAI_IDENTIFIER_PREFIX}{ark_identifier}"
-                    oai_url = f"{OAI_BASE_URL}?verb=GetRecord&identifier={oai_identifier}&metadataPrefix=inmedia"
+                    oai_url = f"{OAI_BASE_URL}?verb=GetRecord&identifier={oai_identifier}&metadataPrefix=oai_dc"
+                    
+                    self.log(f"  Requête: {item['ark_id']}", "PROGRESS") if i < 3 else None
                     
                     response = client.get(oai_url)
                     
@@ -658,32 +660,17 @@ class MatomoARKExtractor(ctk.CTk):
                         # Vérifier si c'est une erreur "idDoesNotExist"
                         if 'idDoesNotExist' in response.text or 'noRecordsMatch' in response.text:
                             no_record_count += 1
-                            # Essayer avec oai_dc
-                            oai_url2 = f"{OAI_BASE_URL}?verb=GetRecord&identifier={oai_identifier}&metadataPrefix=oai_dc"
-                            response2 = client.get(oai_url2)
-                            if response2.status_code == 200 and 'idDoesNotExist' not in response2.text:
-                                metadata = self.parse_oai_response(response2.text, format='oai_dc')
-                                if metadata and metadata.get('title'):
-                                    # Stocker TOUS les champs Dublin Core
-                                    item['titre'] = metadata.get('title', '')
-                                    item['auteur'] = metadata.get('creator', '')
-                                    item['contributeur'] = metadata.get('contributor', '')
-                                    item['date'] = metadata.get('date', '')
-                                    item['editeur'] = metadata.get('publisher', '')
-                                    item['description'] = metadata.get('description', '')[:300] if metadata.get('description') else ''
-                                    item['type_oai'] = metadata.get('type', '')
-                                    item['sujet'] = metadata.get('subject', '')
-                                    item['cote'] = metadata.get('identifier', '')
-                                    item['bibliotheque'] = metadata.get('source', '')
-                                    item['format_doc'] = metadata.get('format', '')
-                                    item['langue'] = metadata.get('language', '')
-                                    item['droits'] = metadata.get('rights', '')
-                                    item['relation'] = metadata.get('relation', '')
-                                    success_count += 1
+                            if no_record_count <= 3:
+                                self.log(f"  Notice non trouvée: {item['ark_id']}", "WARNING")
+                        elif '<error' in response.text:
+                            error_count += 1
+                            if error_count <= 3:
+                                self.log(f"  Erreur OAI pour {item['ark_id']}", "WARNING")
                         else:
-                            metadata = self.parse_oai_response(response.text, format='inmedia')
+                            # Parser la réponse OAI-PMH
+                            metadata = self.parse_oai_response(response.text)
                             
-                            if metadata:
+                            if metadata and metadata.get('title'):
                                 # Stocker TOUS les champs Dublin Core
                                 item['titre'] = metadata.get('title', '')
                                 item['auteur'] = metadata.get('creator', '')
@@ -700,13 +687,17 @@ class MatomoARKExtractor(ctk.CTk):
                                 item['droits'] = metadata.get('rights', '')
                                 item['relation'] = metadata.get('relation', '')
                                 
-                                if metadata.get('title'):
-                                    success_count += 1
-                                    # Log les premiers succès pour feedback
-                                    if success_count <= 3:
-                                        self.log(f"  ✓ {item['ark_id']}: {item['titre'][:50]}...", "DATA")
+                                success_count += 1
+                                # Log les premiers succès pour feedback
+                                if success_count <= 5:
+                                    self.log(f"  ✓ {item['ark_id']}: {item['titre'][:50]}...", "DATA")
+                            else:
+                                # Pas de métadonnées trouvées dans la réponse
+                                no_record_count += 1
                     else:
                         error_count += 1
+                        if error_count <= 3:
+                            self.log(f"  HTTP {response.status_code} pour {item['ark_id']}", "WARNING")
                     
                 except Exception as e:
                     error_count += 1
@@ -719,7 +710,7 @@ class MatomoARKExtractor(ctk.CTk):
         if error_count > 0:
             self.log(f"Erreurs réseau: {error_count}", "WARNING")
     
-    def parse_oai_response(self, xml_text, format='oai_dc'):
+    def parse_oai_response(self, xml_text):
         """Parse la réponse XML OAI-PMH pour extraire TOUTES les métadonnées Dublin Core"""
         try:
             root = ET.fromstring(xml_text)
@@ -746,8 +737,9 @@ class MatomoARKExtractor(ctk.CTk):
                     if dc_elem in ['subject', 'type', 'rights']:
                         metadata[dc_elem] = ' | '.join(found_values)
                     elif dc_elem == 'identifier':
-                        # Garder les identifiants pertinents (ISSN, ISBN, cote)
-                        metadata[dc_elem] = ' | '.join([v for v in found_values if not v.startswith('http')])
+                        # Garder les identifiants pertinents (ISSN, ISBN, cote) mais pas les URLs
+                        non_url = [v for v in found_values if not v.startswith('http')]
+                        metadata[dc_elem] = ' | '.join(non_url) if non_url else ''
                     else:
                         # Pour les autres, prendre la première valeur
                         metadata[dc_elem] = found_values[0]
