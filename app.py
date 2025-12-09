@@ -19,6 +19,7 @@ import webbrowser
 import urllib.parse
 import platform
 import subprocess
+import shutil
 
 # Interface moderne
 import customtkinter as ctk
@@ -225,7 +226,7 @@ class MatomoARKExtractor(ctk.CTk):
         
         ctk.CTkLabel(
             inner_frame,
-            text="✅ Utilise l'API officielle du catalogue - fiable et rapide",
+            text="✅ Utilise l'API OAI-PMH du catalogue (décocher si réseau bloqué)",
             font=ctk.CTkFont(size=11),
             text_color=COLORS['success']
         ).pack(anchor="w", padx=(28, 0), pady=(2, 0))
@@ -746,28 +747,57 @@ class MatomoARKExtractor(ctk.CTk):
                     self.log(f"  Test {meta_prefix} pour {item['ark_id']}", "PROGRESS")
                 
                 try:
-                    # Méthode hybride selon le système
-                    if IS_WINDOWS:
-                        # Windows: utiliser requests avec SSL désactivé
-                        session = requests.Session()
-                        retry_strategy = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
-                        adapter = HTTPAdapter(max_retries=retry_strategy)
-                        session.mount("https://", adapter)
-                        session.headers.update({
-                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                            'Accept': 'application/xml, text/xml, */*',
-                        })
-                        response = session.get(oai_url, timeout=30, verify=False)
-                        last_response_text = response.text
-                        session.close()
-                    else:
-                        # macOS/Linux: utiliser curl (plus fiable)
-                        result = subprocess.run(
-                            ['curl', '-s', '--max-time', '30', oai_url],
-                            capture_output=True,
-                            text=True
-                        )
-                        last_response_text = result.stdout
+                    # Essayer curl d'abord (disponible sur Windows 10+, macOS, Linux)
+                    curl_success = False
+                    try:
+                        # Trouver curl
+                        curl_cmd = shutil.which('curl')
+                        if not curl_cmd and IS_WINDOWS:
+                            # Chemin par défaut sur Windows
+                            curl_cmd = r'C:\Windows\System32\curl.exe'
+                        
+                        if curl_cmd:
+                            result = subprocess.run(
+                                [curl_cmd, '-s', '--max-time', '30', '-k', '--http1.0', oai_url],
+                                capture_output=True,
+                                text=True,
+                                timeout=35
+                            )
+                            if result.returncode == 0 and result.stdout and '<' in result.stdout:
+                                last_response_text = result.stdout
+                                curl_success = True
+                    except Exception:
+                        pass
+                    
+                    if not curl_success:
+                        # Fallback: urllib avec HTTP/1.0 pour éviter chunked encoding
+                        import urllib.request
+                        import ssl
+                        import http.client
+                        
+                        # Forcer HTTP/1.0 (pas de chunked encoding)
+                        http.client.HTTPConnection._http_vsn = 10
+                        http.client.HTTPConnection._http_vsn_str = 'HTTP/1.0'
+                        http.client.HTTPSConnection._http_vsn = 10
+                        http.client.HTTPSConnection._http_vsn_str = 'HTTP/1.0'
+                        
+                        ssl_ctx = ssl.create_default_context()
+                        ssl_ctx.check_hostname = False
+                        ssl_ctx.verify_mode = ssl.CERT_NONE
+                        
+                        req = urllib.request.Request(oai_url)
+                        req.add_header('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)')
+                        req.add_header('Accept', 'application/xml')
+                        req.add_header('Connection', 'close')
+                        
+                        with urllib.request.urlopen(req, timeout=30, context=ssl_ctx) as response:
+                            last_response_text = response.read().decode('utf-8')
+                        
+                        # Restaurer HTTP/1.1 pour les autres requêtes
+                        http.client.HTTPConnection._http_vsn = 11
+                        http.client.HTTPConnection._http_vsn_str = 'HTTP/1.1'
+                        http.client.HTTPSConnection._http_vsn = 11
+                        http.client.HTTPSConnection._http_vsn_str = 'HTTP/1.1'
                     
                     if i < 3:
                         self.log(f"    → {len(last_response_text)} chars", "PROGRESS")
@@ -835,6 +865,10 @@ class MatomoARKExtractor(ctk.CTk):
             self.log(f"Non trouvés dans OAI: {no_record_count}", "WARNING")
         if error_count > 0:
             self.log(f"Erreurs/Sans métadonnées: {error_count}", "WARNING")
+            if error_count > total * 0.5:
+                self.log(f"", "INFO")
+                self.log(f"💡 Beaucoup d'erreurs réseau ? Décochez 'Récupérer les métadonnées'", "INFO")
+                self.log(f"   pour générer l'Excel sans titres (stats Matomo uniquement).", "INFO")
         
         # Enrichir les composantes avec le titre de leur notice parente
         if self.components_data:
