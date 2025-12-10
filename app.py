@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Matomo ARK Extractor v2.1
+Matomo ARK Extractor v2.1.19
 Extraction des statistiques ARK depuis les exports Matomo XML
 avec récupération des métadonnées via l'API OAI-PMH du catalogue Portfolio
 
@@ -19,7 +19,6 @@ import webbrowser
 import urllib.parse
 import platform
 import subprocess
-import shutil
 
 # Interface moderne
 import customtkinter as ctk
@@ -31,17 +30,9 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
-# Détection du système pour choisir la méthode HTTP
+# Détection du système
 IS_WINDOWS = platform.system() == 'Windows'
 IS_MACOS = platform.system() == 'Darwin'
-
-# Sur Windows, utiliser requests ; sur macOS/Linux, utiliser curl
-if IS_WINDOWS:
-    import requests
-    from requests.adapters import HTTPAdapter
-    from urllib3.util.retry import Retry
-    import urllib3
-    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # Désactiver les warnings
 import warnings
@@ -75,7 +66,7 @@ class MatomoARKExtractor(ctk.CTk):
         super().__init__()
         
         # Configuration fenêtre
-        self.title("📚 Matomo ARK Extractor v2.1 - Bibliothèques spécialisées Paris")
+        self.title("📚 Matomo ARK Extractor v2.1.19 - Bibliothèques spécialisées Paris")
         self.geometry("1100x900")
         self.minsize(950, 750)
         
@@ -145,7 +136,7 @@ class MatomoARKExtractor(ctk.CTk):
         
         for text, color in [("Bibliothèques spécialisées", COLORS['primary']), 
                             ("Ville de Paris", COLORS['accent']),
-                            ("v2.1 - OAI-PMH", COLORS['success'])]:
+                            ("v2.1.19", COLORS['success'])]:
             badge = ctk.CTkLabel(
                 badges_frame,
                 text=text,
@@ -345,6 +336,7 @@ class MatomoARKExtractor(ctk.CTk):
         )
         self.log_textbox.pack(fill="both", expand=True, pady=(10, 0))
         self.log("🚀 Prêt ! Sélectionnez un fichier XML Matomo pour commencer.")
+        self.log("   Version 2.1.19 - urllib uniquement")
         self.log("")
         self.log("ℹ️  Cette version utilise l'API OAI-PMH pour récupérer les métadonnées.")
         self.log("   Endpoint: " + OAI_BASE_URL)
@@ -362,7 +354,7 @@ class MatomoARKExtractor(ctk.CTk):
         
         ctk.CTkLabel(
             footer_frame,
-            text="v2.1 - OAI-PMH",
+            text="v2.1.19",
             font=ctk.CTkFont(size=11),
             text_color=COLORS['accent']
         ).pack(side="right")
@@ -747,47 +739,25 @@ class MatomoARKExtractor(ctk.CTk):
                     self.log(f"  Test {meta_prefix} pour {item['ark_id']}", "PROGRESS")
                 
                 try:
-                    last_response_text = None
+                    # Utiliser uniquement urllib (évite les fenêtres curl sur Windows)
+                    import urllib.request
+                    import ssl
                     
-                    # Sur Windows : utiliser urllib (curl ouvre des fenêtres dans Citrix)
-                    # Sur Mac/Linux : utiliser curl (plus fiable)
-                    if not IS_WINDOWS:
-                        try:
-                            curl_cmd = shutil.which('curl')
-                            if curl_cmd:
-                                result = subprocess.run(
-                                    [curl_cmd, '-s', '--max-time', '30', '-k', oai_url],
-                                    capture_output=True,
-                                    text=True,
-                                    timeout=35
-                                )
-                                if result.returncode == 0 and result.stdout and '<' in result.stdout:
-                                    last_response_text = result.stdout
-                        except Exception:
-                            pass
+                    ssl_ctx = ssl.create_default_context()
+                    ssl_ctx.check_hostname = False
+                    ssl_ctx.verify_mode = ssl.CERT_NONE
                     
-                    # Fallback ou Windows : urllib
-                    if not last_response_text:
-                        import urllib.request
-                        import ssl
-                        
-                        ssl_ctx = ssl.create_default_context()
-                        ssl_ctx.check_hostname = False
-                        ssl_ctx.verify_mode = ssl.CERT_NONE
-                        
-                        req = urllib.request.Request(oai_url)
-                        req.add_header('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)')
-                        req.add_header('Accept', 'application/xml; charset=utf-8')
-                        req.add_header('Accept-Encoding', 'identity')
-                        req.add_header('Connection', 'close')
-                        
-                        with urllib.request.urlopen(req, timeout=30, context=ssl_ctx) as response:
-                            raw_bytes = response.read()
-                            # Essayer UTF-8 d'abord
-                            try:
-                                last_response_text = raw_bytes.decode('utf-8')
-                            except UnicodeDecodeError:
-                                last_response_text = raw_bytes.decode('latin-1')
+                    req = urllib.request.Request(oai_url)
+                    req.add_header('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)')
+                    req.add_header('Accept', 'application/xml; charset=utf-8')
+                    req.add_header('Accept-Charset', 'utf-8')
+                    req.add_header('Accept-Encoding', 'identity')
+                    req.add_header('Connection', 'close')
+                    
+                    with urllib.request.urlopen(req, timeout=30, context=ssl_ctx) as response:
+                        raw_bytes = response.read()
+                        # Forcer UTF-8
+                        last_response_text = raw_bytes.decode('utf-8', errors='replace')
                     
                     if i < 3:
                         self.log(f"    → {len(last_response_text)} chars", "PROGRESS")
