@@ -747,54 +747,29 @@ class MatomoARKExtractor(ctk.CTk):
                     self.log(f"  Test {meta_prefix} pour {item['ark_id']}", "PROGRESS")
                 
                 try:
-                    # Essayer curl d'abord (disponible sur Windows 10+, macOS, Linux)
-                    curl_success = False
-                    try:
-                        # Trouver curl
-                        curl_cmd = shutil.which('curl')
-                        if not curl_cmd and IS_WINDOWS:
-                            # Chemin par défaut sur Windows
-                            curl_cmd = r'C:\Windows\System32\curl.exe'
-                        
-                        if curl_cmd:
-                            # Masquer la fenêtre sur Windows
-                            startupinfo = None
-                            creationflags = 0
-                            if IS_WINDOWS:
-                                startupinfo = subprocess.STARTUPINFO()
-                                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-                                startupinfo.wShowWindow = subprocess.SW_HIDE
-                                creationflags = subprocess.CREATE_NO_WINDOW
-                            
-                            result = subprocess.run(
-                                [curl_cmd, '-s', '--max-time', '30', '-k', '--http1.0', oai_url],
-                                capture_output=True,
-                                timeout=35,
-                                startupinfo=startupinfo,
-                                creationflags=creationflags
-                            )
-                            # Décoder en UTF-8 explicitement
-                            if result.returncode == 0 and result.stdout:
-                                try:
-                                    last_response_text = result.stdout.decode('utf-8')
-                                except:
-                                    last_response_text = result.stdout.decode('latin-1')
-                                if '<' in last_response_text:
-                                    curl_success = True
-                    except Exception:
-                        pass
+                    last_response_text = None
                     
-                    if not curl_success:
-                        # Fallback: urllib avec HTTP/1.0 pour éviter chunked encoding
+                    # Sur Windows : utiliser urllib (curl ouvre des fenêtres dans Citrix)
+                    # Sur Mac/Linux : utiliser curl (plus fiable)
+                    if not IS_WINDOWS:
+                        try:
+                            curl_cmd = shutil.which('curl')
+                            if curl_cmd:
+                                result = subprocess.run(
+                                    [curl_cmd, '-s', '--max-time', '30', '-k', oai_url],
+                                    capture_output=True,
+                                    text=True,
+                                    timeout=35
+                                )
+                                if result.returncode == 0 and result.stdout and '<' in result.stdout:
+                                    last_response_text = result.stdout
+                        except Exception:
+                            pass
+                    
+                    # Fallback ou Windows : urllib
+                    if not last_response_text:
                         import urllib.request
                         import ssl
-                        import http.client
-                        
-                        # Forcer HTTP/1.0 (pas de chunked encoding)
-                        http.client.HTTPConnection._http_vsn = 10
-                        http.client.HTTPConnection._http_vsn_str = 'HTTP/1.0'
-                        http.client.HTTPSConnection._http_vsn = 10
-                        http.client.HTTPSConnection._http_vsn_str = 'HTTP/1.0'
                         
                         ssl_ctx = ssl.create_default_context()
                         ssl_ctx.check_hostname = False
@@ -802,17 +777,17 @@ class MatomoARKExtractor(ctk.CTk):
                         
                         req = urllib.request.Request(oai_url)
                         req.add_header('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)')
-                        req.add_header('Accept', 'application/xml')
+                        req.add_header('Accept', 'application/xml; charset=utf-8')
+                        req.add_header('Accept-Encoding', 'identity')
                         req.add_header('Connection', 'close')
                         
                         with urllib.request.urlopen(req, timeout=30, context=ssl_ctx) as response:
-                            last_response_text = response.read().decode('utf-8')
-                        
-                        # Restaurer HTTP/1.1 pour les autres requêtes
-                        http.client.HTTPConnection._http_vsn = 11
-                        http.client.HTTPConnection._http_vsn_str = 'HTTP/1.1'
-                        http.client.HTTPSConnection._http_vsn = 11
-                        http.client.HTTPSConnection._http_vsn_str = 'HTTP/1.1'
+                            raw_bytes = response.read()
+                            # Essayer UTF-8 d'abord
+                            try:
+                                last_response_text = raw_bytes.decode('utf-8')
+                            except UnicodeDecodeError:
+                                last_response_text = raw_bytes.decode('latin-1')
                     
                     if i < 3:
                         self.log(f"    → {len(last_response_text)} chars", "PROGRESS")
